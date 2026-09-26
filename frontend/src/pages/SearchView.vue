@@ -222,6 +222,18 @@ function resetAll(): void {
         />
         <dl class="gb-facts">
           <div><dt>编目号</dt><dd>{{ activePostmark.pmNo }}</dd></div>
+          <div v-if="activePostmark.aliases && activePostmark.aliases.length"><dt>历史编号</dt>
+            <dd>
+              <el-tag
+                v-for="alias in activePostmark.aliases"
+                :key="alias"
+                size="small"
+                type="info"
+                effect="plain"
+                class="search-view__alias"
+              >{{ alias }}</el-tag>
+            </dd>
+          </div>
           <div><dt>戳型</dt><dd>{{ activePostmark.type }}</dd></div>
           <div><dt>局所</dt><dd>{{ activePostmark.office }}</dd></div>
           <div><dt>省份</dt><dd>{{ activePostmark.province || '待考' }}</dd></div>
@@ -257,5 +269,8 @@ function resetAll(): void {
   font-size: 13px;
   color: var(--gb-muted);
   line-height: 1.6;
+}
+.search-view__alias + .search-view__alias {
+  margin-left: 4px;
 }
 </style>

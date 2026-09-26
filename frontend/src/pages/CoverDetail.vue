@@ -381,6 +381,18 @@ function openRoute(): void {
         />
         <dl class="gb-facts">
           <div><dt>编目号</dt><dd>{{ activePostmark.pmNo }}</dd></div>
+          <div v-if="activePostmark.aliases && activePostmark.aliases.length"><dt>历史编号</dt>
+            <dd>
+              <el-tag
+                v-for="alias in activePostmark.aliases"
+                :key="alias"
+                size="small"
+                type="info"
+                effect="plain"
+                class="cover-detail__alias"
+              >{{ alias }}</el-tag>
+            </dd>
+          </div>
           <div><dt>戳型</dt><dd>{{ activePostmark.type }}</dd></div>
           <div><dt>局所</dt><dd>{{ activePostmark.office }}</dd></div>
           <div><dt>使用年代</dt><dd>{{ activePostmark.yearFrom }}-{{ activePostmark.yearTo }}</dd></div>
@@ -446,5 +458,8 @@ function openRoute(): void {
   max-width: 100%;
   border-radius: 8px;
   margin-bottom: 10px;
+}
+.cover-detail__alias + .cover-detail__alias {
+  margin-left: 4px;
 }
 </style>

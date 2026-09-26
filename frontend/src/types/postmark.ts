@@ -43,6 +43,8 @@ export interface Postmark {
   scarceLevel: ScarceLevel
   /** 戳样图（缩略 dataURL；原图存 assets 表） */
   imageDataUrl: string
+  /** 历史别名：合并到本枚的其他邮戳原编号（含更早的旧编号） */
+  aliases: string[]
   note: string
   createdAt: string
   updatedAt: string
@@ -92,6 +94,7 @@ export function createEmptyPostmark(): Postmark {
     bilingual: false,
     scarceLevel: '常见',
     imageDataUrl: '',
+    aliases: [],
     note: '',
     createdAt: '',
     updatedAt: ''

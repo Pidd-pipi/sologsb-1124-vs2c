@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadFile } from 'element-plus'
 import StampCard from '@/components/common/StampCard.vue'
 import ScarceTag from '@/components/common/ScarceTag.vue'
 import { useCatalogFilter } from '@/hooks/useCatalogFilter'
+import { useCoverStore } from '@/stores/coverStore'
 import { usePostmarkStore, type ImagePayload } from '@/stores/postmarkStore'
+import type { Cover } from '@/types/cover'
 import type { Postmark } from '@/types/postmark'
 import {
   INK_COLORS,
@@ -18,6 +20,7 @@ import { clearDraft, draftSavedAt, loadDraft, saveDraft } from '@/utils/draft'
 import { nowIso, toNumber } from '@/utils/id'
 
 const store = usePostmarkStore()
+const coverStore = useCoverStore()
 const source = computed(() => store.list)
 const { filters, filtered, activeCount, reset } = useCatalogFilter<Postmark>('postmark', source)
 
@@ -33,6 +36,7 @@ const form = reactive<Postmark>(createEmptyPostmark())
 
 onMounted(async () => {
   if (!store.loaded) await store.load()
+  if (!coverStore.loaded) await coverStore.load()
   draftHint.value = draftSavedAt('postmark')
 })
 
@@ -136,6 +140,124 @@ async function copySample(): Promise<void> {
     ElMessage.info('浏览器未授权剪贴板，请手动选择文本')
   }
 }
+
+/* ------------------------------ 合并到另一枚 ------------------------------ */
+
+interface MergePreview {
+  /** 将随关联转来的实寄封 */
+  covers: Cover[]
+  /** 其中原本同时关联两枚、合并后仅去重不新增的封 */
+  duplicateCoverIds: Set<number>
+  sourceHasSample: boolean
+  targetHasSample: boolean
+  /** 保留枚当前戳样的展示地址（缩略图或原图，任一存在即可） */
+  targetSampleUrl: string
+  /** 保留枚空缺、将接住的原图缩略 dataURL */
+  incomingSampleUrl: string
+  incomingSampleName: string
+  /** 将新记入保留枚的历史别名（原编号 + 原枚更早的旧编号） */
+  aliasesToAdd: string[]
+}
+
+const mergeVisible = ref(false)
+const merging = ref(false)
+const mergeSource = ref<Postmark | null>(null)
+const mergeTargetId = ref<number | null>(null)
+const mergeAck = ref(false)
+const mergePreview = ref<MergePreview | null>(null)
+
+/** 合并对话框中可供选择的保留枚（排除当前查看的这枚） */
+const mergeCandidates = computed<Postmark[]>(() =>
+  store.list.filter((pm) => pm.id !== mergeSource.value?.id)
+)
+
+const mergeTarget = computed<Postmark | null>(() =>
+  mergeTargetId.value == null ? null : store.byId(mergeTargetId.value)
+)
+
+async function openMerge(pm: Postmark): Promise<void> {
+  mergeSource.value = pm
+  mergeTargetId.value = null
+  mergeAck.value = false
+  mergePreview.value = null
+  mergeVisible.value = true
+}
+
+watch(mergeTargetId, async () => {
+  mergeAck.value = false
+  await refreshMergePreview()
+})
+
+async function refreshMergePreview(): Promise<void> {
+  const source = mergeSource.value
+  const target = mergeTarget.value
+  if (!source || !target || source.id == null || target.id == null) {
+    mergePreview.value = null
+    return
+  }
+
+  const related = coverStore.list.filter((c) => c.cancelPmIds.includes(source.id!))
+  const duplicateCoverIds = new Set(
+    related
+      .filter((c) => typeof c.id === 'number' && c.cancelPmIds.includes(target.id!))
+      .map((c) => c.id as number)
+  )
+
+  const sourceAsset = source.id == null ? null : await store.loadSampleAsset(source.id)
+  const targetAsset = target.id == null ? null : await store.loadSampleAsset(target.id)
+  const sourceHasSample = !!(source.imageDataUrl && source.imageDataUrl.trim()) || !!sourceAsset
+  const targetHasSample = !!(target.imageDataUrl && target.imageDataUrl.trim()) || !!targetAsset
+
+  const incoming = new Set<string>([source.pmNo, ...(source.aliases ?? [])].filter(Boolean))
+  for (const alias of target.aliases ?? []) incoming.delete(alias)
+  incoming.delete(target.pmNo)
+
+  mergePreview.value = {
+    covers: related,
+    duplicateCoverIds,
+    sourceHasSample,
+    targetHasSample,
+    targetSampleUrl: target.imageDataUrl?.trim() ? target.imageDataUrl : targetAsset?.dataUrl ?? '',
+    incomingSampleUrl: targetHasSample ? '' : sourceAsset?.dataUrl ?? source.imageDataUrl ?? '',
+    incomingSampleName: targetHasSample ? '' : sourceAsset?.fileName ?? '原戳样',
+    aliasesToAdd: [...incoming]
+  }
+}
+
+const mergeCanSubmit = computed(
+  () => mergeTargetId.value != null && mergeAck.value && !merging.value
+)
+
+async function submitMerge(): Promise<void> {
+  const source = mergeSource.value
+  const targetId = mergeTargetId.value
+  if (!source || source.id == null || targetId == null || !mergePreview.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认将 ${source.pmNo} 合并到 ${mergeTarget.value?.pmNo ?? ''}？原编号将成为历史别名，操作不可撤销。`,
+      '最终确认合并',
+      { type: 'warning', confirmButtonText: '确认合并', cancelButtonText: '再想想' }
+    )
+  } catch {
+    return
+  }
+  merging.value = true
+  try {
+    const result = await store.mergeInto(source.id, targetId)
+    ElMessage.success(
+      `已合并：${result.transferredCoverCount} 封实寄封改挂保留枚，` +
+        `历史别名记录 ${result.aliasesAdded.length} 个旧编号` +
+        (result.sampleTakenOver ? '，原戳样已接入空缺位置' : '')
+    )
+    mergeVisible.value = false
+    current.value = store.byId(targetId)
+    detailVisible.value = true
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : '合并失败，请重试')
+  } finally {
+    merging.value = false
+  }
+}
 </script>
 
 <template>
@@ -227,11 +349,14 @@ async function copySample(): Promise<void> {
           <ScarceTag :level="row.scarceLevel" />
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="190">
+      <el-table-column label="操作" width="250">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click.stop="showDetail(row)">查看</el-button>
           <el-button size="small" link type="primary" @click.stop="generateSample(row)">
             生成戳样条目
+          </el-button>
+          <el-button size="small" link type="danger" @click.stop="openMerge(row)">
+            合并到另一枚
           </el-button>
         </template>
       </el-table-column>
@@ -365,6 +490,18 @@ async function copySample(): Promise<void> {
         </div>
         <h3 class="gb-panel__title">{{ current.pmNo }} · {{ current.type }}</h3>
         <ScarceTag :level="current.scarceLevel" />
+        <div v-if="current.aliases && current.aliases.length" class="postmark-page__aliases">
+          <span class="postmark-page__aliases-label">历史编号：</span>
+          <el-tag
+            v-for="alias in current.aliases"
+            :key="alias"
+            size="small"
+            type="info"
+            effect="plain"
+          >
+            {{ alias }}
+          </el-tag>
+        </div>
         <dl class="gb-facts">
           <div><dt>使用局所</dt><dd>{{ current.office }}</dd></div>
           <div><dt>省份</dt><dd>{{ current.province || '待考' }}</dd></div>
@@ -376,7 +513,10 @@ async function copySample(): Promise<void> {
           <div><dt>文字</dt><dd>{{ current.bilingual ? '中英双文字' : '单文字' }}</dd></div>
         </dl>
         <p class="postmark-page__note">{{ current.note || '暂无备注' }}</p>
-        <el-button type="primary" plain @click="generateSample(current)">生成戳样条目</el-button>
+        <div class="postmark-page__detail-actions">
+          <el-button type="primary" plain @click="generateSample(current)">生成戳样条目</el-button>
+          <el-button type="danger" plain @click="openMerge(current)">合并到另一枚</el-button>
+        </div>
       </div>
     </el-drawer>
 
@@ -385,6 +525,142 @@ async function copySample(): Promise<void> {
       <template #footer>
         <el-button @click="sampleVisible = false">关闭</el-button>
         <el-button type="primary" @click="copySample">复制条目</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="mergeVisible" title="合并到另一枚" width="640px">
+      <div v-if="mergeSource" class="postmark-merge">
+        <p class="postmark-merge__lead">
+          将 <strong>{{ mergeSource.pmNo }}</strong>
+          <span class="postmark-merge__office">{{ mergeSource.office }}</span>
+          并入另一枚保留邮戳。请先核对以下将要转来的实寄封与图片，确认无误后再执行。
+        </p>
+
+        <el-form label-width="96px">
+          <el-form-item label="保留邮戳">
+            <el-select
+              v-model="mergeTargetId"
+              filterable
+              placeholder="选择合并后保留的邮戳"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="pm in mergeCandidates"
+                :key="pm.id"
+                :label="`${pm.pmNo} ${pm.office}（${pm.type}）`"
+                :value="Number(pm.id)"
+              />
+            </el-select>
+          </el-form-item>
+        </el-form>
+
+        <template v-if="mergePreview && mergeTarget">
+          <el-alert
+            :closable="false"
+            type="info"
+            show-icon
+            class="postmark-merge__alert"
+            :title="`合并后实寄封上的销票关联统一指向 ${mergeTarget.pmNo}；票戳组合与寄递记录不动，用旧编号检索仍可找到本档案。`"
+          />
+
+          <section class="postmark-merge__block">
+            <h4 class="postmark-merge__block-title">
+              将转来的实寄封（{{ mergePreview.covers.length }} 封）
+            </h4>
+            <p v-if="!mergePreview.covers.length" class="postmark-merge__empty">
+              该枚邮戳当前没有实寄封关联，仅合并档案本身。
+            </p>
+            <el-table v-else :data="mergePreview.covers" size="small" border max-height="220">
+              <el-table-column prop="coverNo" label="封号" width="110" />
+              <el-table-column label="收寄地" min-width="170">
+                <template #default="{ row }">{{ row.sentFrom }} → {{ row.sentTo }}</template>
+              </el-table-column>
+              <el-table-column prop="postDate" label="寄出日期" width="110" />
+              <el-table-column label="关联处理" width="120">
+                <template #default="{ row }">
+                  <el-tag
+                    v-if="mergePreview.duplicateCoverIds.has(Number(row.id))"
+                    size="small"
+                    type="info"
+                    effect="plain"
+                  >
+                    去重保留一项
+                  </el-tag>
+                  <el-tag v-else size="small" type="warning" effect="plain">改挂保留枚</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </section>
+
+          <section class="postmark-merge__block">
+            <h4 class="postmark-merge__block-title">戳样图片</h4>
+            <div class="postmark-merge__sample">
+              <div v-if="mergePreview.targetHasSample" class="postmark-merge__sample-cell">
+                <img :src="mergePreview.targetSampleUrl" :alt="`${mergeTarget.pmNo} 保留戳样`" />
+                <span>保留枚已有戳样，原戳样不覆盖、不并入。</span>
+              </div>
+              <template v-else>
+                <div class="postmark-merge__sample-cell">
+                  <img :src="mergePreview.targetSampleUrl" :alt="`${mergeTarget.pmNo} 暂无戳样`" />
+                  <span>保留枚当前空缺。</span>
+                </div>
+                <span class="postmark-merge__arrow">→</span>
+                <div class="postmark-merge__sample-cell">
+                  <img
+                    v-if="mergePreview.incomingSampleUrl"
+                    :src="mergePreview.incomingSampleUrl"
+                    alt="将接住的原戳样"
+                  />
+                  <span v-else class="postmark-merge__no-sample">原枚也无戳样</span>
+                  <span v-if="mergePreview.sourceHasSample">空缺位置接住原图（{{ mergePreview.incomingSampleName }}）。</span>
+                  <span v-else>双方均无戳样，无图片可接。</span>
+                </div>
+              </template>
+            </div>
+          </section>
+
+          <section class="postmark-merge__block">
+            <h4 class="postmark-merge__block-title">历史别名（旧编号）</h4>
+            <p v-if="!mergePreview.aliasesToAdd.length" class="postmark-merge__empty">
+              没有新的旧编号需要记录（可能此前已合并过，仍回到同一枚）。
+            </p>
+            <div v-else class="postmark-merge__alias-tags">
+              <el-tag
+                v-for="alias in mergePreview.aliasesToAdd"
+                :key="alias"
+                size="small"
+                type="info"
+                effect="plain"
+              >
+                {{ alias }}
+              </el-tag>
+              <span class="postmark-merge__alias-hint">
+                将记入 {{ mergeTarget.pmNo}} 的历史编号，目录按这些编号也能检索到本档案。
+              </span>
+            </div>
+            <p
+              v-if="mergeTarget.aliases && mergeTarget.aliases.length"
+              class="postmark-merge__existing"
+            >
+              保留枚已有历史编号：{{ mergeTarget.aliases.join('、') }}
+            </p>
+          </section>
+
+          <el-checkbox v-model="mergeAck" class="postmark-merge__ack">
+            我已核对以上实寄封与图片，确认合并不可撤销
+          </el-checkbox>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="mergeVisible = false">取消</el-button>
+        <el-button
+          type="danger"
+          :disabled="!mergeCanSubmit"
+          :loading="merging"
+          @click="submitMerge"
+        >
+          确认合并
+        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -420,5 +696,108 @@ async function copySample(): Promise<void> {
   font-size: 13px;
   color: var(--gb-muted);
   line-height: 1.6;
+}
+.postmark-page__aliases {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.postmark-page__aliases-label {
+  font-size: 13px;
+  color: var(--gb-muted);
+}
+.postmark-page__detail-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.postmark-merge__lead {
+  margin: 0 0 14px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.postmark-merge__lead strong {
+  color: #5d3325;
+  font-size: 15px;
+}
+.postmark-merge__office {
+  color: var(--gb-muted);
+  margin-left: 4px;
+}
+.postmark-merge__alert {
+  margin-bottom: 14px;
+}
+.postmark-merge__block {
+  margin-bottom: 14px;
+}
+.postmark-merge__block-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #3f3226;
+}
+.postmark-merge__empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--gb-muted);
+}
+.postmark-merge__sample {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+.postmark-merge__sample-cell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  background: #f8f2e8;
+  border: 1px solid var(--gb-line, #e4d9c8);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  color: var(--gb-muted);
+  text-align: center;
+}
+.postmark-merge__sample-cell img {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #fff;
+}
+.postmark-merge__arrow {
+  align-self: center;
+  font-size: 18px;
+  color: #8c3b2e;
+}
+.postmark-merge__no-sample {
+  width: 96px;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: #a89578;
+}
+.postmark-merge__alias-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.postmark-merge__alias-hint {
+  font-size: 12px;
+  color: var(--gb-muted);
+}
+.postmark-merge__existing {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--gb-muted);
+}
+.postmark-merge__ack {
+  margin-top: 4px;
 }
 </style>
