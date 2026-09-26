@@ -11,7 +11,7 @@ import type { AssetOwnerType, AssetSide, CatalogAsset } from '@/types/asset'
 
 export const DB_NAME = 'gbpostmark'
 /** 当前数据结构版本号，升级迁移写在下面对应的 version() 中 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 export class GbPostmarkDatabase extends Dexie {
   postmarks!: Table<Postmark, number>
@@ -71,6 +71,21 @@ export class GbPostmarkDatabase extends Dexie {
           .modify((rt: Partial<PostalRoute>) => {
             if (!Array.isArray(rt.nodes)) rt.nodes = []
             if (typeof rt.totalDays !== 'number') rt.totalDays = 0
+          })
+      })
+
+    // v3：邮戳增加「历史别名」，合并旧编号后仍可按旧编号检索
+    this.version(DB_VERSION)
+      .stores({
+        postmarks:
+          '++id, pmNo, type, office, province, yearFrom, yearTo, scarceLevel, inkColor, bilingual, *aliases'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('postmarks')
+          .toCollection()
+          .modify((pm: Partial<Postmark>) => {
+            if (!Array.isArray(pm.aliases)) pm.aliases = []
           })
       })
   }
@@ -142,7 +157,9 @@ function svgDataUrl(svg: string): string {
 }
 
 /** 依据戳面信息合成一张戳样图，用作样例数据的戳样。 */
-function postmarkSampleDataUrl(pm: Postmark): string {
+function postmarkSampleDataUrl(
+  pm: Pick<Postmark, 'inkColor' | 'diameter' | 'lettering' | 'office' | 'type' | 'yearFrom' | 'yearTo'>
+): string {
   const ink = INK_HEX[pm.inkColor] ?? '#2f2a26'
   const r = 46 + Math.min(18, Math.max(0, pm.diameter - 24))
   const svg = [
@@ -177,7 +194,11 @@ function coverThumbDataUrl(coverNo: string, from: string, to: string, date: stri
 const SEED_TS = '2024-05-01T09:00:00.000Z'
 
 function seedPostmarks(): Postmark[] {
-  const base = (pm: Postmark): Postmark => ({ ...pm, imageDataUrl: postmarkSampleDataUrl(pm) })
+  const base = (pm: Omit<Postmark, 'aliases'>): Postmark => ({
+    ...pm,
+    aliases: [],
+    imageDataUrl: postmarkSampleDataUrl(pm)
+  })
   return [
     base({
       id: 1,

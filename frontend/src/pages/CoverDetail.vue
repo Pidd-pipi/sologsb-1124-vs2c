@@ -381,6 +381,9 @@ function openRoute(): void {
         />
         <dl class="gb-facts">
           <div><dt>编目号</dt><dd>{{ activePostmark.pmNo }}</dd></div>
+          <div v-if="activePostmark.aliases?.length">
+            <dt>历史别名</dt><dd>{{ activePostmark.aliases.join('、') }}</dd>
+          </div>
           <div><dt>戳型</dt><dd>{{ activePostmark.type }}</dd></div>
           <div><dt>局所</dt><dd>{{ activePostmark.office }}</dd></div>
           <div><dt>使用年代</dt><dd>{{ activePostmark.yearFrom }}-{{ activePostmark.yearTo }}</dd></div>

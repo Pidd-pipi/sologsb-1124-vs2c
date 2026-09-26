@@ -4,8 +4,9 @@ import { ElMessage } from 'element-plus'
 import type { UploadFile } from 'element-plus'
 import StampCard from '@/components/common/StampCard.vue'
 import ScarceTag from '@/components/common/ScarceTag.vue'
+import MergePostmarkDialog from '@/components/postmark/MergePostmarkDialog.vue'
 import { useCatalogFilter } from '@/hooks/useCatalogFilter'
-import { usePostmarkStore, type ImagePayload } from '@/stores/postmarkStore'
+import { usePostmarkStore, type ImagePayload, type MergeResult } from '@/stores/postmarkStore'
 import type { Postmark } from '@/types/postmark'
 import {
   INK_COLORS,
@@ -30,6 +31,9 @@ const sampleText = ref('')
 const imagePayload = ref<ImagePayload | null>(null)
 const draftHint = ref('')
 const form = reactive<Postmark>(createEmptyPostmark())
+
+const mergeVisible = ref(false)
+const mergeSource = ref<Postmark | null>(null)
 
 onMounted(async () => {
   if (!store.loaded) await store.load()
@@ -108,9 +112,23 @@ function showDetail(pm: Postmark): void {
   detailVisible.value = true
 }
 
+function openMerge(pm: Postmark): void {
+  mergeSource.value = pm
+  mergeVisible.value = true
+}
+
+function onMerged(result: MergeResult): void {
+  // 合并后回到保留枚档案；源枚已删除，current 指向的旧对象需替换
+  const kept = store.byId(result.targetId)
+  current.value = kept
+  detailVisible.value = !!kept
+  mergeSource.value = null
+}
+
 function buildSampleText(pm: Postmark): string {
   return [
     `戳样条目 ${pm.pmNo}`,
+    pm.aliases?.length ? `历史别名：${pm.aliases.join('、')}` : '',
     `戳型：${pm.type}`,
     `局所：${pm.office}（${pm.province || '省份待考'}）`,
     `使用年代：${pm.yearFrom}-${pm.yearTo}`,
@@ -120,7 +138,9 @@ function buildSampleText(pm: Postmark): string {
     `文字：${pm.bilingual ? '中英双文字' : '单文字'}`,
     `稀见度：${pm.scarceLevel}`,
     `备注：${pm.note || '无'}`
-  ].join('\n')
+  ]
+    .filter((line) => line !== '')
+    .join('\n')
 }
 
 function generateSample(pm: Postmark): void {
@@ -227,12 +247,13 @@ async function copySample(): Promise<void> {
           <ScarceTag :level="row.scarceLevel" />
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="190">
+      <el-table-column label="操作" width="250">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click.stop="showDetail(row)">查看</el-button>
           <el-button size="small" link type="primary" @click.stop="generateSample(row)">
             生成戳样条目
           </el-button>
+          <el-button size="small" link type="danger" @click.stop="openMerge(row)">合并到另一枚</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -365,6 +386,19 @@ async function copySample(): Promise<void> {
         </div>
         <h3 class="gb-panel__title">{{ current.pmNo }} · {{ current.type }}</h3>
         <ScarceTag :level="current.scarceLevel" />
+        <p v-if="current.aliases?.length" class="postmark-page__aliases">
+          历史别名：
+          <el-tag
+            v-for="alias in current.aliases"
+            :key="alias"
+            size="small"
+            effect="plain"
+            class="postmark-page__alias-tag"
+          >
+            {{ alias }}
+          </el-tag>
+          <span class="postmark-page__alias-hint">（用旧编号仍可检索到本枚）</span>
+        </p>
         <dl class="gb-facts">
           <div><dt>使用局所</dt><dd>{{ current.office }}</dd></div>
           <div><dt>省份</dt><dd>{{ current.province || '待考' }}</dd></div>
@@ -376,7 +410,10 @@ async function copySample(): Promise<void> {
           <div><dt>文字</dt><dd>{{ current.bilingual ? '中英双文字' : '单文字' }}</dd></div>
         </dl>
         <p class="postmark-page__note">{{ current.note || '暂无备注' }}</p>
-        <el-button type="primary" plain @click="generateSample(current)">生成戳样条目</el-button>
+        <div class="postmark-page__detail-actions">
+          <el-button type="primary" plain @click="generateSample(current)">生成戳样条目</el-button>
+          <el-button type="danger" plain @click="openMerge(current)">合并到另一枚</el-button>
+        </div>
       </div>
     </el-drawer>
 
@@ -387,6 +424,12 @@ async function copySample(): Promise<void> {
         <el-button type="primary" @click="copySample">复制条目</el-button>
       </template>
     </el-dialog>
+
+    <MergePostmarkDialog
+      v-model="mergeVisible"
+      :source="mergeSource"
+      @merged="onMerged"
+    />
   </div>
 </template>
 
@@ -420,5 +463,25 @@ async function copySample(): Promise<void> {
   font-size: 13px;
   color: var(--gb-muted);
   line-height: 1.6;
+}
+.postmark-page__detail-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.postmark-page__aliases {
+  margin: 0;
+  font-size: 13px;
+  color: var(--gb-muted);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.postmark-page__alias-tag {
+  letter-spacing: 0.03em;
+}
+.postmark-page__alias-hint {
+  font-size: 12px;
 }
 </style>

@@ -73,8 +73,10 @@ function noOf(kind: CatalogKind, row: AnyRow): string {
 function keywordHaystack(kind: CatalogKind, row: AnyRow): string {
   if (kind === 'postmark') {
     const lettering = (row.lettering ?? {}) as AnyRow
+    const aliases = Array.isArray(row.aliases) ? (row.aliases as string[]) : []
     return [
       textOf(row.pmNo),
+      aliases.join(' '),
       textOf(row.type),
       textOf(row.office),
       textOf(row.province),

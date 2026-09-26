@@ -222,6 +222,9 @@ function resetAll(): void {
         />
         <dl class="gb-facts">
           <div><dt>编目号</dt><dd>{{ activePostmark.pmNo }}</dd></div>
+          <div v-if="activePostmark.aliases?.length">
+            <dt>历史别名</dt><dd>{{ activePostmark.aliases.join('、') }}</dd>
+          </div>
           <div><dt>戳型</dt><dd>{{ activePostmark.type }}</dd></div>
           <div><dt>局所</dt><dd>{{ activePostmark.office }}</dd></div>
           <div><dt>省份</dt><dd>{{ activePostmark.province || '待考' }}</dd></div>
